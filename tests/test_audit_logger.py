@@ -26,14 +26,23 @@ class TestAuditLogger:
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
             assert logger is not None
+            assert logger.log_dir == Path(tmpdir)
 
-    def test_log_creates_entry(self):
-        """Test that log() creates a log entry."""
+    def test_log_dir_created(self):
+        """Test that log directory is created on init."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_subdir = Path(tmpdir) / 'audit_logs'
+            logger = AuditLogger(log_dir=str(log_subdir))
+            assert log_subdir.exists()
+
+    def test_log_event_creates_entry(self):
+        """Test that log_event() creates a log entry."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO'
             )
@@ -46,12 +55,13 @@ class TestAuditLogger:
         """Test that log entries have the correct structure."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO',
-                details={'key': 'value'}
+                metadata={'key': 'value'}
             )
             
             # Read the log file
@@ -67,8 +77,10 @@ class TestAuditLogger:
                         assert 'timestamp' in entry
                         assert 'user_id' in entry
                         assert 'action' in entry
+                        assert 'resource' in entry
                         assert 'result' in entry
                         assert 'severity' in entry
+                        assert 'metadata' in entry
 
     def test_severity_levels(self):
         """Test that different severity levels are handled."""
@@ -77,9 +89,10 @@ class TestAuditLogger:
             
             severities = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
             for severity in severities:
-                logger.log(
+                logger.log_event(
                     user_id='test_user',
                     action=f'TEST_{severity}',
+                    resource='TEST_RESOURCE',
                     result='SUCCESS',
                     severity=severity
                 )
@@ -96,9 +109,10 @@ class TestAuditLogger:
         """Test that timestamps are in ISO format."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO'
             )
@@ -120,9 +134,10 @@ class TestAuditLogger:
             logger = AuditLogger(log_dir=tmpdir)
             
             special_chars = 'Test with "quotes", <brackets>, and üñíçødé'
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action=special_chars,
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO'
             )
@@ -133,29 +148,31 @@ class TestAuditLogger:
                 entry = json.loads(f.readline())
                 assert special_chars in entry['action']
 
-    def test_details_field_optional(self):
-        """Test that details field is optional."""
+    def test_metadata_field_optional(self):
+        """Test that metadata field defaults to empty dict."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
             
-            # Log without details
-            logger.log(
+            # Log without metadata
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO'
             )
             
-            # Should not raise an exception
             log_files = list(Path(tmpdir).glob('*.log'))
-            assert len(log_files) >= 1
+            with open(log_files[0], 'r') as f:
+                entry = json.loads(f.readline())
+                assert entry['metadata'] == {}
 
-    def test_details_field_with_nested_data(self):
-        """Test that nested details are properly serialized."""
+    def test_metadata_field_with_nested_data(self):
+        """Test that nested metadata is properly serialized."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
             
-            nested_details = {
+            nested_metadata = {
                 'level1': {
                     'level2': {
                         'level3': 'deep_value'
@@ -165,48 +182,68 @@ class TestAuditLogger:
                 'mixed': ['a', 1, {'key': 'value'}]
             }
             
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO',
-                details=nested_details
+                metadata=nested_metadata
             )
             
             log_files = list(Path(tmpdir).glob('*.log'))
             with open(log_files[0], 'r') as f:
                 entry = json.loads(f.readline())
-                assert entry['details'] == nested_details
+                assert entry['metadata'] == nested_metadata
+
+    def test_log_security_alert(self):
+        """Test the log_security_alert convenience method."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = AuditLogger(log_dir=tmpdir)
+            
+            logger.log_security_alert(
+                reason='Suspicious activity',
+                detail='Multiple failed login attempts'
+            )
+            
+            log_files = list(Path(tmpdir).glob('*.log'))
+            with open(log_files[0], 'r') as f:
+                entry = json.loads(f.readline())
+                assert entry['user_id'] == 'SYSTEM'
+                assert entry['action'] == 'SECURITY_ALERT'
+                assert entry['severity'] == 'CRITICAL'
 
 
 class TestAuditLoggerSecurity:
     """Security-focused tests for AuditLogger."""
 
-    def test_no_sensitive_data_exposure(self):
-        """Test that sensitive data patterns are handled."""
+    def test_sensitive_data_in_metadata(self):
+        """Test that sensitive data can be logged in metadata."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
             
-            # Log with potentially sensitive data
-            logger.log(
+            # Log with potentially sensitive data (logger doesn't filter, app should)
+            logger.log_event(
                 user_id='test_user',
                 action='API_CALL',
+                resource='EXTERNAL_API',
                 result='SUCCESS',
                 severity='INFO',
-                details={'api_key': 'sk-test-12345'}  # Should be logged but handled properly
+                metadata={'api_key': 'sk-test-12345'}
             )
             
-            # The logger should NOT crash or expose data unexpectedly
+            # The logger should NOT crash
             log_files = list(Path(tmpdir).glob('*.log'))
             assert len(log_files) >= 1
 
-    def test_log_file_permissions(self):
-        """Test that log files have appropriate permissions."""
+    def test_log_file_exists(self):
+        """Test that log files are created and accessible."""
         with tempfile.TemporaryDirectory() as tmpdir:
             logger = AuditLogger(log_dir=tmpdir)
-            logger.log(
+            logger.log_event(
                 user_id='test_user',
                 action='TEST_ACTION',
+                resource='TEST_RESOURCE',
                 result='SUCCESS',
                 severity='INFO'
             )
