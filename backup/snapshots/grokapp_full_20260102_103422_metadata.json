@@ -1,0 +1,14 @@
+{
+  "backup_id": "grokapp_full_20260102_103422",
+  "backup_type": "full",
+  "timestamp": "2026-01-02T10:34:22.824882Z",
+  "path": "/Users/jlow/.gemini/antigravity/scratch/GrokApp/backup/snapshots/grokapp_full_20260102_103422.tar.gz",
+  "size_bytes": 6777,
+  "checksum_sha256": "f4ff750eabea3d65a7e352c075f69434c7a1bcf5a847431666b7c3975c44b939",
+  "files_included": [
+    "security/",
+    "monitoring/",
+    "requirements.txt"
+  ],
+  "status": "completed"
+}

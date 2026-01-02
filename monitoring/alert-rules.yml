@@ -1,102 +1,173 @@
+# GrokApp Alerting Rules
+# ======================
+# Prometheus alerting rules for GrokApp monitoring
+
 groups:
-  - name: grokapp.rules
+  - name: grokapp_availability
+    interval: 30s
     rules:
-      - alert: HighErrorRate
-        expr: rate(http_requests_total{status=~"5.."}[5m]) > 0.1
-        for: 2m
-        labels:
-          severity: warning
-          service: grokapp-api
-        annotations:
-          summary: "High error rate detected"
-          description: "Error rate is {{ $value }} errors per second"
-
-      - alert: HighResponseTime
-        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 0.5
-        for: 5m
-        labels:
-          severity: warning
-          service: grokapp-api
-        annotations:
-          summary: "High response time detected"
-          description: "95th percentile response time is {{ $value }} seconds"
-
-      - alert: DatabaseConnectionsHigh
-        expr: pg_stat_database_numbackends > 80
-        for: 5m
-        labels:
-          severity: critical
-          service: postgresql
-        annotations:
-          summary: "Database connections too high"
-          description: "Database has {{ $value }} connections"
-
-      - alert: RedisMemoryHigh
-        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
-        for: 5m
-        labels:
-          severity: warning
-          service: redis
-        annotations:
-          summary: "Redis memory usage high"
-          description: "Redis memory usage is {{ $value | humanizePercentage }}"
-
-      - alert: DiskSpaceLow
-        expr: (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) < 0.1
-        for: 5m
-        labels:
-          severity: critical
-          service: system
-        annotations:
-          summary: "Low disk space"
-          description: "Disk space is {{ $value | humanizePercentage }} available"
-
-      - alert: CPUHigh
-        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
-        for: 5m
-        labels:
-          severity: warning
-          service: system
-        annotations:
-          summary: "High CPU usage"
-          description: "CPU usage is {{ $value }}%"
-
-      - alert: MemoryHigh
-        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
-        for: 5m
-        labels:
-          severity: warning
-          service: system
-        annotations:
-          summary: "High memory usage"
-          description: "Memory usage is {{ $value }}%"
-
-      - alert: ServiceDown
-        expr: up == 0
+      # Service Down Alerts
+      - alert: GrokAPIDown
+        expr: up{job="grok_api"} == 0
         for: 1m
         labels:
           severity: critical
-          service: grokapp
+          service: grok_api
         annotations:
-          summary: "Service is down"
-          description: "{{ $labels.instance }} has been down for more than 1 minute"
+          summary: "GrokAPI is down"
+          description: "GrokAPI has been unreachable for more than 1 minute"
+          runbook_url: "https://docs.grokapp.io/runbooks/grok-api-down"
+
+      - alert: OrbitBridgeDown
+        expr: up{job="orbit_bridge"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: orbit_bridge
+        annotations:
+          summary: "OrbitBridge is down"
+          description: "OrbitBridge WebSocket server has been unreachable for more than 1 minute"
+          runbook_url: "https://docs.grokapp.io/runbooks/orbit-bridge-down"
+
+      - alert: JobMasterDown
+        expr: up{job="job_master"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: job_master
+        annotations:
+          summary: "JobMaster is down"
+          description: "JobMaster job scheduling service has been unreachable for more than 1 minute"
+          runbook_url: "https://docs.grokapp.io/runbooks/job-master-down"
+
+      - alert: PrometheusTargetMissing
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus target is missing"
+          description: "A Prometheus target has been down for more than 5 minutes: {{ $labels.job }}"
+
+  - name: grokapp_performance
+    interval: 60s
+    rules:
+      # High Latency Alerts
+      - alert: HighAPILatency
+        expr: http_request_duration_seconds{quantile="0.99"} > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High API latency detected"
+          description: "99th percentile latency is above 2 seconds for {{ $labels.endpoint }}"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is above 5% for {{ $labels.job }}"
+
+      # Memory and CPU Alerts
+      - alert: HighMemoryUsage
+        expr: process_resident_memory_bytes / 1073741824 > 4
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Process is using more than 4GB of memory"
+
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is above 80% for {{ $labels.job }}"
+
+  - name: grokapp_security
+    interval: 30s
+    rules:
+      # Security Alerts
+      - alert: HighFailedLoginAttempts
+        expr: increase(security_failed_logins_total[15m]) > 10
+        for: 0s
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "High number of failed login attempts"
+          description: "More than 10 failed login attempts in the last 15 minutes"
+          runbook_url: "https://docs.grokapp.io/runbooks/security-failed-logins"
+
+      - alert: APIKeyExposureDetected
+        expr: security_api_key_exposures_total > 0
+        for: 0s
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "API key exposure detected"
+          description: "Potential API key exposure has been detected by security scanner"
+          runbook_url: "https://docs.grokapp.io/runbooks/api-key-exposure"
+
+      - alert: UnauthorizedAccessAttempt
+        expr: increase(security_unauthorized_access_total[5m]) > 5
+        for: 0s
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Multiple unauthorized access attempts"
+          description: "More than 5 unauthorized access attempts in 5 minutes"
+
+  - name: grokapp_backup
+    interval: 300s  # Check every 5 minutes
+    rules:
+      # Backup Alerts
+      - alert: BackupMissing
+        expr: time() - backup_last_success_timestamp_seconds > 86400
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Backup is overdue"
+          description: "No successful backup in the last 24 hours"
 
       - alert: BackupFailed
-        expr: backup_success == 0
-        for: 0m
+        expr: backup_last_status == 0
+        for: 0s
         labels:
           severity: critical
-          service: backup
         annotations:
-          summary: "Backup failed"
-          description: "Last backup failed to complete"
+          summary: "Last backup failed"
+          description: "The most recent backup attempt failed"
+          runbook_url: "https://docs.grokapp.io/runbooks/backup-failed"
 
-      - alert: SecurityBreachDetected
-        expr: rate(security_events_total{severity="critical"}[5m]) > 0
-        for: 0m
+  - name: grokapp_audit
+    interval: 60s
+    rules:
+      # Audit Log Alerts
+      - alert: CriticalSecurityEvent
+        expr: increase(audit_events_total{severity="CRITICAL"}[5m]) > 0
+        for: 0s
         labels:
           severity: critical
-          service: security
+          category: audit
         annotations:
-          summary: "Security breach detected"
-          description: "Critical security events detected: {{ $value }} events/second"
+          summary: "Critical security event logged"
+          description: "A critical security event has been recorded in the audit log"
+
+      - alert: HighVolumeAuditEvents
+        expr: rate(audit_events_total[5m]) > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusually high audit event volume"
+          description: "More than 100 audit events per second sustained for 10 minutes"
