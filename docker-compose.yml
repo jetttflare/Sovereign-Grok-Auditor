@@ -1,0 +1,204 @@
+version: '3.8'
+
+# GrokApp Docker Compose Configuration
+# =====================================
+# Production-ready container orchestration
+
+services:
+  # Main GrokAPI Service
+  grokapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: grokapp-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - GROKAPP_ENV=production
+      - GROKAPP_PORT=8080
+      - GROKAPP_LOG_LEVEL=INFO
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - grokapp-network
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # OrbitBridge WebSocket Server
+  orbitbridge:
+    build:
+      context: ./orbitbridge
+      dockerfile: Dockerfile
+    container_name: grokapp-bridge
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - WS_PORT=3001
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3001/status" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - grokapp-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+
+  # JobMaster Scheduler
+  jobmaster:
+    build:
+      context: .
+      dockerfile: Dockerfile.jobmaster
+    container_name: grokapp-jobmaster
+    restart: unless-stopped
+    ports:
+      - "5010:5010"
+    environment:
+      - GROKAPP_ENV=production
+      - REDIS_URL=redis://redis:6379
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5010/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - grokapp-network
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: grokapp-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - grokapp-network
+
+  # Prometheus Monitoring
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: grokapp-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - grokapp-network
+
+  # Grafana Dashboard
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grokapp-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - grokapp-network
+    depends_on:
+      - prometheus
+
+  # Alertmanager
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: grokapp-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - grokapp-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: grokapp-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./static:/var/www/static:ro
+    networks:
+      - grokapp-network
+    depends_on:
+      - grokapi
+      - orbitbridge
+
+networks:
+  grokapp-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  redis-data:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:
